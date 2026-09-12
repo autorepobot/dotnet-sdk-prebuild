@@ -274,7 +274,12 @@ jobs:
             mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64 \
             bash -c '
               set -e
-              tdnf install -y openssl-devel
+              tdnf install -y \
+                openssl-devel \
+                icu-devel \
+                krb5-devel \
+                zlib-devel \
+                lttng-ust-devel
               ./build.sh \
                 --clean-while-building \
                 --prep \
@@ -342,7 +347,12 @@ jobs:
             mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl \
             bash -c '
               set -e
-              tdnf install -y openssl-devel
+              tdnf install -y \
+                openssl-devel \
+                icu-devel \
+                krb5-devel \
+                zlib-devel \
+                lttng-ust-devel
               ./build.sh \
                 --clean-while-building \
                 --prep \
