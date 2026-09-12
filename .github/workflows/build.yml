@@ -275,6 +275,10 @@ jobs:
             bash -c '
               set -e
 
+              tdnf install -y python3-pip
+
+              python3 -m pip install --no-cache-dir aiohttp
+
               python3 /dotnet/src/runtime/eng/common/cross/install-debs.py \
                 --arch amd64 \
                 --rootfsdir "$ROOTFS_DIR" \
@@ -352,7 +356,27 @@ jobs:
             bash -c '
               set -e
 
-              apk.static --root "$ROOTFS_DIR" --initdb add openssl-dev
+              apk_tools_dir=$(mktemp -d)
+
+              curl -fsSL \
+                -o "$apk_tools_dir/apk.static" \
+                "https://gitlab.alpinelinux.org/api/v4/projects/5/packages/generic/v2.12.11/x86_64/apk.static"
+
+              echo "53e57b49230da07ef44ee0765b9592580308c407a8d4da7125550957bb72cb59638e04f8892a18b584451c8d841d1c7cb0f0ab680cc323a3015776affaa3be33  $apk_tools_dir/apk.static" \
+                | sha512sum -c -
+
+              chmod +x "$apk_tools_dir/apk.static"
+
+              "$apk_tools_dir/apk.static" \
+                -X "https://dl-cdn.alpinelinux.org/alpine/v3.17/main" \
+                -X "https://dl-cdn.alpinelinux.org/alpine/v3.17/community" \
+                -U \
+                --allow-untrusted \
+                --root "$ROOTFS_DIR" \
+                --arch x86_64 \
+                add openssl-dev
+
+              rm -rf "$apk_tools_dir"
 
               ./build.sh \
                 --clean-while-building \
