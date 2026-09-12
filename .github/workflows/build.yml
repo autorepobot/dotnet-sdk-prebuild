@@ -271,7 +271,7 @@ jobs:
             -v "${{ github.workspace }}/dotnet:/dotnet" \
             -w /dotnet \
             -e ROOTFS_DIR=/crossrootfs/x64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-x64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64 \
             ./build.sh \
               --clean-while-building \
               --prep \
@@ -335,7 +335,7 @@ jobs:
             -v "${{ github.workspace }}/dotnet:/dotnet" \
             -w /dotnet \
             -e ROOTFS_DIR=/crossrootfs/x64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-x64-musl \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl \
             ./build.sh \
               --clean-while-building \
               --prep \
