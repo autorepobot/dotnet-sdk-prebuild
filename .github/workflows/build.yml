@@ -1,0 +1,909 @@
+name: Build .NET SDK
+
+run-name: "Build .NET SDK : ${{ inputs.branch }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      fork:
+        description: 'dotnet VMR fork name'
+        required: true
+        type: string
+        default: dotnet
+
+      branch:
+        description: 'dotnet VMR branch name'
+        required: true
+        type: string
+        default: main
+
+      branding:
+        description: 'SDK branding'
+        required: true
+        type: choice
+        options:
+          - unstable
+          - preview
+          - release
+        default: preview
+
+      release:
+        description: 'publish release'
+        type: boolean
+
+
+# ============================================================
+# x86
+# ============================================================
+
+jobs:
+
+  build-x86:
+    name: Build linux-x86
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Prepare x86 RID patch
+        run: |
+          cat > "${{ github.workspace }}/patch-x86-sdk.py" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+
+          if not path.is_file():
+              raise SystemExit(2)
+
+          text = path.read_text()
+          old = text
+
+          def add_attr_to_known_blocks(text, marker, attr):
+              start = 0
+              changed = False
+
+              while True:
+                  start = text.find(marker, start)
+                  if start == -1:
+                      break
+
+                  end = text.find("/>", start)
+                  if end == -1:
+                      break
+
+                  block = text[start:end]
+                  attr_pos = block.find(attr)
+
+                  if attr_pos != -1:
+                      value_start = attr_pos + len(attr)
+                      value_end = block.find('"', value_start)
+
+                      if value_end != -1:
+                          value = block[value_start:value_end]
+                          values = value.split(";")
+
+                          if "linux-x86" not in values:
+                              value += ";linux-x86"
+
+                              block = (
+                                  block[:value_start]
+                                  + value
+                                  + block[value_end:]
+                              )
+
+                              text = (
+                                  text[:start]
+                                  + block
+                                  + text[end:]
+                              )
+
+                              end = start + len(block)
+                              changed = True
+
+                  start = end + 2
+
+              return text, changed
+
+          changed = False
+
+          for framework in (
+              "Microsoft.NETCore.App",
+              "Microsoft.AspNetCore.App",
+          ):
+              text, block_changed = add_attr_to_known_blocks(
+                  text,
+                  f'<KnownFrameworkReference Include="{framework}"',
+                  'RuntimePackRuntimeIdentifiers="',
+              )
+              changed |= block_changed
+
+          text, block_changed = add_attr_to_known_blocks(
+              text,
+              "<KnownAppHostPack",
+              'AppHostRuntimeIdentifiers="',
+          )
+          changed |= block_changed
+
+          if changed:
+              path.write_text(text)
+              print(f"[RID PATCH] Patched {path}")
+              raise SystemExit(0)
+
+          required = [
+              'RuntimePackRuntimeIdentifiers="',
+              'AppHostRuntimeIdentifiers="',
+          ]
+
+          if all(
+              attr in text and "linux-x86" in text[text.find(attr):]
+              for attr in required
+          ):
+              print(f"[RID PATCH] Already patched {path}")
+              raise SystemExit(0)
+
+          raise SystemExit(1)
+          PY
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -v "${{ github.workspace }}/patch-x86-sdk.py:/patch-x86-sdk.py:ro" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/x86 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-x86 \
+            bash -c '
+              set -e
+
+              (
+                while true; do
+                  for sdk_props in /dotnet/.dotnet/sdk/*/Microsoft.NETCoreSdk.BundledVersions.props; do
+                    if [[ -f "$sdk_props" ]]; then
+                      if python3 /patch-x86-sdk.py "$sdk_props"; then
+                        exit 0
+                      fi
+                    fi
+                  done
+
+                  sleep 1
+                done
+              ) &
+
+              patch_pid=$!
+
+              trap "kill $patch_pid 2>/dev/null || true" EXIT
+
+              ./build.sh \
+                --clean-while-building \
+                --prep \
+                -sb \
+                --os linux \
+                --rid linux-x86 \
+                --arch x86 \
+                --use-mono-runtime \
+                '"$branding_arg"' \
+                -p:OfficialBuildId=$(date +%Y%m%d).99
+            '
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-x86
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# x64
+# ============================================================
+
+  build-x64:
+    name: Build linux-x64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/x64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-x64 \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux \
+              --rid linux-x64 \
+              --arch x64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-x64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+  build-x64-musl:
+    name: Build linux-musl-x64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/x64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-x64-musl \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux-musl \
+              --rid linux-musl-x64 \
+              --arch x64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-musl-x64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# arm64
+# ============================================================
+
+  build-arm64:
+    name: Build linux-arm64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/arm64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64 \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux \
+              --rid linux-arm64 \
+              --arch arm64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-arm64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+  build-arm64-musl:
+    name: Build linux-musl-arm64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/arm64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64-musl \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux-musl \
+              --rid linux-musl-arm64 \
+              --arch arm64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-musl-arm64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# loong64 / loongarch64
+# ============================================================
+
+  build-loong64:
+    name: Build linux-loongarch64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/loongarch64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-loongarch64 \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux \
+              --rid linux-loongarch64 \
+              --arch loongarch64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-loongarch64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+  build-loong64-musl:
+    name: Build linux-musl-loongarch64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/loongarch64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-loongarch64-musl \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux-musl \
+              --rid linux-musl-loongarch64 \
+              --arch loongarch64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-musl-loongarch64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# riscv64
+# ============================================================
+
+  build-riscv64:
+    name: Build linux-riscv64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/riscv64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64 \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux \
+              --rid linux-riscv64 \
+              --arch riscv64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-riscv64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+  build-riscv64-musl:
+    name: Build linux-musl-riscv64
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/riscv64 \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux-musl \
+              --rid linux-musl-riscv64 \
+              --arch riscv64 \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-musl-riscv64
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# ppc64le
+# ============================================================
+
+  build-ppc64le:
+    name: Build linux-ppc64le
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v4.1
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-cached-tools: 'true'
+
+      - name: Clone repository
+        run: |
+          git clone --single-branch --depth 1 \
+            -b ${{ inputs.branch }} \
+            https://github.com/${{ inputs.fork }}/dotnet
+
+      - name: Build
+        run: |
+          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
+
+          branding_arg=""
+          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
+            branding_arg="--branding ${{ inputs.branding }}"
+          fi
+
+          echo "Major version: $major_version"
+          echo "Branding argument: $branding_arg"
+
+          docker run \
+            --platform linux/amd64 \
+            --rm \
+            -v "${{ github.workspace }}/dotnet:/dotnet" \
+            -w /dotnet \
+            -e ROOTFS_DIR=/crossrootfs/ppc64le \
+            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-ppc64le \
+            ./build.sh \
+              --clean-while-building \
+              --prep \
+              -sb \
+              --os linux \
+              --rid linux-ppc64le \
+              --arch ppc64le \
+              --use-mono-runtime \
+              $branding_arg \
+              -p:OfficialBuildId=$(date +%Y%m%d).99
+
+      - name: List assets directory
+        run: |
+          find "${{ github.workspace }}/dotnet/artifacts"
+
+      - name: Upload .NET
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-sdk-linux-ppc64le
+          path: |
+            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
+
+
+# ============================================================
+# Release
+# ============================================================
+
+  release:
+    name: Publish Release
+    needs:
+      - build-x86
+      - build-x64
+      - build-x64-musl
+      - build-arm64
+      - build-arm64-musl
+      - build-loong64
+      - build-loong64-musl
+      - build-riscv64
+      - build-riscv64-musl
+      - build-ppc64le
+
+    runs-on: ubuntu-latest
+
+    if: >
+      always() &&
+      inputs.release &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Make release
+        run: |
+          sdk_paths=$(find "${{ github.workspace }}/artifacts" -name 'dotnet-sdk-*.tar.gz')
+
+          if [ -z "$sdk_paths" ]; then
+            echo "No SDK artifacts found"
+            exit 1
+          fi
+
+          artifacts=""
+          tag_name=""
+
+          for sdk_path in $sdk_paths; do
+            sdk_filename=$(basename "$sdk_path")
+
+            sdk_version=$(echo "$sdk_filename" | \
+              sed -E 's/dotnet-sdk-([^-]+(-[^-]+)*)-linux-.+\.tar\.gz/\1/')
+
+            artifacts="$artifacts \"$sdk_path\""
+            tag_name="$sdk_version"
+          done
+
+          echo "tag_name: $tag_name"
+          echo "artifacts: $artifacts"
+
+          eval gh release create \
+            "\"$tag_name\"" \
+            $artifacts \
+            --repo "\"${{ github.repository }}\"" \
+            --target "\"${{ github.sha }}\"" \
+            --title "\"$tag_name\"" \
+            --notes "\"$tag_name\"" \
+            $([ "${{ inputs.branding }}" = "release" ] || echo "--prerelease")
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+      - name: Create failed tag
+        if: failure() && inputs.branch != 'main'
+        run: |
+          tag_name="${{ inputs.branch }}.${{ github.run_id }}.failed"
+
+          echo "tag_name: $tag_name"
+
+          gh api repos/${{ github.repository }}/git/refs \
+            -f ref="refs/tags/$tag_name" \
+            -f sha="${{ github.sha }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
