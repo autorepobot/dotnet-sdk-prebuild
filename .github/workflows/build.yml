@@ -303,79 +303,6 @@ jobs:
             ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
 
 
-  build-x64-musl:
-    name: Build linux-musl-x64
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-cached-tools: 'true'
-
-      - name: Clone repository
-        run: |
-          git clone --single-branch --depth 1 \
-            -b ${{ inputs.branch }} \
-            https://github.com/${{ inputs.fork }}/dotnet
-
-      - name: Build
-        run: |
-          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
-
-          branding_arg=""
-          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
-            branding_arg="--branding ${{ inputs.branding }}"
-          fi
-
-          echo "Major version: $major_version"
-          echo "Branding argument: $branding_arg"
-
-          docker run \
-            --platform linux/amd64 \
-            --rm \
-            -v "${{ github.workspace }}/dotnet:/dotnet" \
-            -w /dotnet \
-            -e ROOTFS_DIR=/crossrootfs/x64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl \
-            bash -c '
-              set -e
-              tdnf install -y \
-                openssl-devel \
-                icu-devel \
-                krb5-devel \
-                zlib-devel \
-                lttng-ust-devel
-              ./build.sh \
-                --clean-while-building \
-                --prep \
-                -sb \
-                --os linux-musl \
-                --rid linux-musl-x64 \
-                --arch x64 \
-                '"$branding_arg"' \
-                -p:OfficialBuildId=$(date +%Y%m%d).99
-            '
-
-      - name: List assets directory
-        run: |
-          find "${{ github.workspace }}/dotnet/artifacts"
-
-      - name: Upload .NET
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-sdk-linux-musl-x64
-          path: |
-            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
-
-
 # ============================================================
 # arm64
 # ============================================================
@@ -440,70 +367,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dotnet-sdk-linux-arm64
-          path: |
-            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
-
-
-  build-arm64-musl:
-    name: Build linux-musl-arm64
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-cached-tools: 'true'
-
-      - name: Clone repository
-        run: |
-          git clone --single-branch --depth 1 \
-            -b ${{ inputs.branch }} \
-            https://github.com/${{ inputs.fork }}/dotnet
-
-      - name: Build
-        run: |
-          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
-
-          branding_arg=""
-          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
-            branding_arg="--branding ${{ inputs.branding }}"
-          fi
-
-          echo "Major version: $major_version"
-          echo "Branding argument: $branding_arg"
-
-          docker run \
-            --platform linux/amd64 \
-            --rm \
-            -v "${{ github.workspace }}/dotnet:/dotnet" \
-            -w /dotnet \
-            -e ROOTFS_DIR=/crossrootfs/arm64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64-musl \
-            ./build.sh \
-              --clean-while-building \
-              --prep \
-              -sb \
-              --os linux-musl \
-              --rid linux-musl-arm64 \
-              --arch arm64 \
-              $branding_arg \
-              -p:OfficialBuildId=$(date +%Y%m%d).99
-
-      - name: List assets directory
-        run: |
-          find "${{ github.workspace }}/dotnet/artifacts"
-
-      - name: Upload .NET
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-sdk-linux-musl-arm64
           path: |
             ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
 
@@ -576,70 +439,6 @@ jobs:
             ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
 
 
-  build-loong64-musl:
-    name: Build linux-musl-loongarch64
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-cached-tools: 'true'
-
-      - name: Clone repository
-        run: |
-          git clone --single-branch --depth 1 \
-            -b ${{ inputs.branch }} \
-            https://github.com/${{ inputs.fork }}/dotnet
-
-      - name: Build
-        run: |
-          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
-
-          branding_arg=""
-          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
-            branding_arg="--branding ${{ inputs.branding }}"
-          fi
-
-          echo "Major version: $major_version"
-          echo "Branding argument: $branding_arg"
-
-          docker run \
-            --platform linux/amd64 \
-            --rm \
-            -v "${{ github.workspace }}/dotnet:/dotnet" \
-            -w /dotnet \
-            -e ROOTFS_DIR=/crossrootfs/loongarch64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-loongarch64-musl \
-            ./build.sh \
-              --clean-while-building \
-              --prep \
-              -sb \
-              --os linux-musl \
-              --rid linux-musl-loongarch64 \
-              --arch loongarch64 \
-              $branding_arg \
-              -p:OfficialBuildId=$(date +%Y%m%d).99
-
-      - name: List assets directory
-        run: |
-          find "${{ github.workspace }}/dotnet/artifacts"
-
-      - name: Upload .NET
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-sdk-linux-musl-loongarch64
-          path: |
-            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
-
-
 # ============================================================
 # riscv64
 # ============================================================
@@ -704,70 +503,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dotnet-sdk-linux-riscv64
-          path: |
-            ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
-
-
-  build-riscv64-musl:
-    name: Build linux-musl-riscv64
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-cached-tools: 'true'
-
-      - name: Clone repository
-        run: |
-          git clone --single-branch --depth 1 \
-            -b ${{ inputs.branch }} \
-            https://github.com/${{ inputs.fork }}/dotnet
-
-      - name: Build
-        run: |
-          major_version=$(echo "${{ inputs.branch }}" | sed -E 's/^v?([0-9]+)\..*/\1/')
-
-          branding_arg=""
-          if [[ "$major_version" =~ ^[0-9]+$ ]] && [ "$major_version" -ge 11 ]; then
-            branding_arg="--branding ${{ inputs.branding }}"
-          fi
-
-          echo "Major version: $major_version"
-          echo "Branding argument: $branding_arg"
-
-          docker run \
-            --platform linux/amd64 \
-            --rm \
-            -v "${{ github.workspace }}/dotnet:/dotnet" \
-            -w /dotnet \
-            -e ROOTFS_DIR=/crossrootfs/riscv64 \
-            mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-riscv64-musl \
-            ./build.sh \
-              --clean-while-building \
-              --prep \
-              -sb \
-              --os linux-musl \
-              --rid linux-musl-riscv64 \
-              --arch riscv64 \
-              $branding_arg \
-              -p:OfficialBuildId=$(date +%Y%m%d).99
-
-      - name: List assets directory
-        run: |
-          find "${{ github.workspace }}/dotnet/artifacts"
-
-      - name: Upload .NET
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-sdk-linux-musl-riscv64
           path: |
             ${{ github.workspace }}/dotnet/artifacts/assets/Release/Sdk/*/dotnet-sdk-*.tar.gz
 
@@ -850,13 +585,9 @@ jobs:
     needs:
       - build-x86
       - build-x64
-      - build-x64-musl
       - build-arm64
-      - build-arm64-musl
       - build-loong64
-      - build-loong64-musl
       - build-riscv64
-      - build-riscv64-musl
       - build-ppc64le
 
     runs-on: ubuntu-latest
